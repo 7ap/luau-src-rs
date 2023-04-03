@@ -2,14 +2,24 @@
 #include "luacode.h"
 
 #include "Luau/Compiler.h"
+#include "Luau/BytecodeBuilder.h"
 
 #include <string.h>
+
+class RobloxBytecodeEncoder : public Luau::BytecodeEncoder
+{
+    uint8_t encodeOp(uint8_t op)
+    {
+        return op * 227;
+    }
+};
 
 char* luau_compile(const char* source, size_t size, lua_CompileOptions* options, size_t* outsize)
 {
     LUAU_ASSERT(outsize);
 
     Luau::CompileOptions opts;
+    RobloxBytecodeEncoder encoder;
 
     if (options)
     {
@@ -17,7 +27,7 @@ char* luau_compile(const char* source, size_t size, lua_CompileOptions* options,
         memcpy(static_cast<void*>(&opts), options, sizeof(opts));
     }
 
-    std::string result = compile(std::string(source, size), opts);
+    std::string result = compile(std::string(source, size), opts, {}, &encoders);
 
     char* copy = static_cast<char*>(malloc(result.size()));
     if (!copy)
