@@ -27,7 +27,7 @@ char* luau_compile(const char* source, size_t size, lua_CompileOptions* options,
         memcpy(static_cast<void*>(&opts), options, sizeof(opts));
     }
 
-    std::string result = compile(std::string(source, size), opts, {}, &encoders);
+    std::string result = compile(std::string(source, size), opts, {}, &encoder);
 
     char* copy = static_cast<char*>(malloc(result.size()));
     if (!copy)
