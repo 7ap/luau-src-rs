@@ -6,6 +6,14 @@ pub struct Build {
     out_dir: Option<PathBuf>,
     target: Option<String>,
     host: Option<String>,
+    // Max number of Lua stack slots that a C function can use
+    max_cstack_size: usize,
+    // Use longjmp instead of C++ exceptions
+    use_longjmp: bool,
+    // Enable code generator (jit)
+    enable_codegen: bool,
+    // Vector size, must be 3 (default) or 4
+    vector_size: usize,
 }
 
 pub struct Artifacts {
@@ -22,6 +30,10 @@ impl Build {
             out_dir: env::var_os("OUT_DIR").map(|s| PathBuf::from(s).join("luau-build")),
             target: env::var("TARGET").ok(),
             host: env::var("HOST").ok(),
+            max_cstack_size: 100000,
+            use_longjmp: false,
+            enable_codegen: false,
+            vector_size: 3,
         }
     }
 
@@ -40,6 +52,27 @@ impl Build {
         self
     }
 
+    pub fn set_max_cstack_size(&mut self, size: usize) -> &mut Build {
+        self.max_cstack_size = size;
+        self
+    }
+
+    pub fn use_longjmp(&mut self, r#use: bool) -> &mut Build {
+        self.use_longjmp = r#use;
+        self
+    }
+
+    pub fn enable_codegen(&mut self, enable: bool) -> &mut Build {
+        self.enable_codegen = enable;
+        self
+    }
+
+    pub fn set_vector_size(&mut self, size: usize) -> &mut Build {
+        assert!(size == 3 || size == 4);
+        self.vector_size = size;
+        self
+    }
+
     pub fn build(&mut self) -> Artifacts {
         let target = &self.target.as_ref().expect("TARGET not set")[..];
         let host = &self.host.as_ref().expect("HOST not set")[..];
@@ -51,6 +84,8 @@ impl Build {
         let common_include_dir = source_dir_base.join("luau").join("Common").join("include");
         let ast_source_dir = source_dir_base.join("luau").join("Ast").join("src");
         let ast_include_dir = source_dir_base.join("luau").join("Ast").join("include");
+        let codegen_source_dir = source_dir_base.join("luau").join("CodeGen").join("src");
+        let codegen_include_dir = source_dir_base.join("luau").join("CodeGen").join("include");
         let compiler_source_dir = source_dir_base.join("luau").join("Compiler").join("src");
         let compiler_include_dir = source_dir_base
             .join("luau")
@@ -81,9 +116,19 @@ impl Build {
             .flag_if_supported("/std:c++17") // MSVC
             .cpp(true);
 
+        // Common defines
+        config.define("LUAI_MAXCSTACK", &*self.max_cstack_size.to_string());
+        config.define("LUA_VECTOR_SIZE", &*self.vector_size.to_string());
+
+        if self.use_longjmp {
+            config.define("LUA_USE_LONGJMP", "1");
+        }
+
         if cfg!(not(debug_assertions)) {
             config.define("NDEBUG", None);
             config.opt_level(2);
+            // this flag allows compiler to lower sqrt() into a single CPU instruction
+            config.flag_if_supported("-fno-math-errno");
         }
 
         // Build Ast
@@ -95,6 +140,23 @@ impl Build {
             .add_files_by_ext(&ast_source_dir, "cpp")
             .out_dir(&lib_dir)
             .compile(ast_lib_name);
+
+        // Build CogeGen
+        let codegen_lib_name = "luaucodegen";
+        if self.enable_codegen {
+            config
+                .clone()
+                .include(&codegen_include_dir)
+                .include(&common_include_dir)
+                .include(&vm_include_dir)
+                .include(&vm_source_dir)
+                .define("LUACODEGEN_API", "extern \"C\"")
+                // Code generator uses lua VM internals, so we need to provide the same defines used to build VM
+                .define("LUA_API", "extern \"C\"")
+                .add_files_by_ext(&codegen_source_dir, "cpp")
+                .out_dir(&lib_dir)
+                .compile(codegen_lib_name);
+        }
 
         // Build Compiler
         let compiler_lib_name = "luaucompiler";
@@ -115,8 +177,6 @@ impl Build {
             .include(&vm_include_dir)
             .include(&common_include_dir)
             .define("LUA_API", "extern \"C\"")
-            .define("LUAI_MAXCSTACK", "100000")
-            // .define("LUA_USE_LONGJMP", "1")
             .add_files_by_ext(&vm_source_dir, "cpp")
             .out_dir(&lib_dir)
             .compile(vm_lib_name);
@@ -128,7 +188,7 @@ impl Build {
             fs::copy(compiler_include_dir.join(f), include_dir.join(f)).unwrap();
         }
 
-        Artifacts {
+        let mut artifacts = Artifacts {
             lib_dir,
             include_dir,
             libs: vec![
@@ -137,7 +197,13 @@ impl Build {
                 vm_lib_name.to_string(),
             ],
             cpp_stdlib: Self::get_cpp_link_stdlib(target),
+        };
+
+        if self.enable_codegen {
+            artifacts.libs.push(codegen_lib_name.to_string());
         }
+
+        artifacts
     }
 
     fn get_cpp_link_stdlib(target: &str) -> Option<String> {
