@@ -3,15 +3,21 @@
 
 #include "Luau/Compiler.h"
 #include "Luau/BytecodeBuilder.h"
+#include "Luau/BytecodeUtils.h"
 
 #include <string.h>
+#include <cstdint>
 
-class RobloxBytecodeEncoder : public Luau::BytecodeEncoder
-{
-    uint8_t encodeOp(uint8_t op)
-    {
-        return op * 227;
-    }
+class RobloxBytecodeEncoder : public Luau::BytecodeEncoder {
+	void encode(uint32_t* data, size_t count) override {
+		for (size_t i = 0; i < count;) {
+			uint8_t op = LUAU_INSN_OP(data[i]);
+			int oplen = Luau::getOpLength(LuauOpcode(op));
+			uint8_t openc = uint8_t(op * 227);
+			data[i] = (data[i] & ~0xff) | openc;
+			i += oplen;
+		}
+	}
 };
 
 char* luau_compile(const char* source, size_t size, lua_CompileOptions* options, size_t* outsize)
